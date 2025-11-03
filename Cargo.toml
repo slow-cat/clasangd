@@ -2,6 +2,9 @@
 name = "clasangd"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+authors = ["slow_cat"]
+description="clangd proxy that merged ASan diagnostics within single LSP"
 
 [dependencies]
 anyhow = "1.0.100"
