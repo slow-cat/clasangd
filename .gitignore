@@ -4,4 +4,4 @@
 !test.c
 !Cargo.*
 !.gitignore
-
+!helix.log
