@@ -1,0 +1,7 @@
+*
+!src/
+!src/*rs
+!test.c
+!Cargo.*
+!.gitignore
+
