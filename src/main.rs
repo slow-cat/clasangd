@@ -213,15 +213,15 @@ where
             }
         };
 
-        // メッセージ内容に関係なく、まずは clangd へそのまま転送
+        // didSave のときにログを読んでstoreを更新（publishはclangdからの応答時に行う）
+        if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/didSave") {
+            update_logs_store(store.clone()).await?;
+        }
+
+        // clangd へ転送
         {
             let mut w = server_writer.lock().await;
             write_lsp_message(&mut *w, &msg).await?;
-        }
-
-        // didSave のときにログを読んで publish する
-        if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/didSave") {
-            update_logs_and_publish(client_writer.clone(), store.clone()).await?;
         }
     }
     Ok(())
@@ -280,6 +280,12 @@ async fn handle_publish_from_clangd(
         .cloned()
         .unwrap_or_default();
 
+    eprintln!(
+        "[clasangd] Received from clangd for {}: {} diagnostics",
+        uri,
+        clang_diags.len()
+    );
+
     {
         let mut st = store.lock().await;
         st.set_clang(&uri, clang_diags);
@@ -288,6 +294,12 @@ async fn handle_publish_from_clangd(
     // 合成して publish
     let merged = {
         let st = store.lock().await;
+        eprintln!(
+            "[clasangd] Publishing for {}: {} clang diags, {} log diags",
+            uri,
+            st.clang.get(&uri).map(|v| v.len()).unwrap_or(0),
+            st.logs.get(&uri).map(|v| v.len()).unwrap_or(0)
+        );
         st.merged_for(&uri)
     };
 
@@ -306,43 +318,27 @@ async fn handle_publish_from_clangd(
     Ok(())
 }
 
-async fn update_logs_and_publish(
-    client_writer: SharedClientWriter,
-    store: SharedStore,
-) -> Result<()> {
+async fn update_logs_store(store: SharedStore) -> Result<()> {
     // ログを読む（ここは sync fs でもOKだが、一応 blocking を避けるなら tokio::fs にしてもよい）
     let txt = std::fs::read_to_string(BUILD_LOG).unwrap_or_default()
         + &std::fs::read_to_string(RUN_LOG).unwrap_or_default();
 
+    eprintln!("[clasangd] Reading logs, total size: {} bytes", txt.len());
+
     let logs_by_file = parse_diagnostics(&txt); // uri -> Vec<diag>
 
-    {
-        let mut st = store.lock().await;
-        st.set_logs(logs_by_file);
+    eprintln!("[clasangd] Parsed logs for {} files", logs_by_file.len());
+    for (uri, diags) in &logs_by_file {
+        eprintln!("[clasangd]   {}: {} diagnostics", uri, diags.len());
     }
 
-    // すべての URI について合成結果を publish
-    let merged_by_uri = {
-        let st = store.lock().await;
-        let uris = st.all_uris();
-        let merged: Vec<(String, Vec<Value>)> =
-            uris.iter().map(|u| (u.clone(), st.merged_for(u))).collect();
-        merged
-    };
-
-    let mut w = client_writer.lock().await;
-    for (uri, diags) in merged_by_uri {
-        let msg = json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": uri,
-                "version": 0,
-                "diagnostics": diags
-            }
-        });
-        write_lsp_message(&mut *w, &msg).await?;
-    }
+    // ログが空でない場合のみstoreを更新（空ログで上書きしない）
+    // if !logs_by_file.is_empty() {
+    let mut st = store.lock().await;
+    st.set_logs(logs_by_file);
+    // } else {
+    // eprintln!("[clasangd] Skipping empty log update");
+    // }
 
     Ok(())
 }

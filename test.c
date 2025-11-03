@@ -8,10 +8,8 @@ int main(void) {
   int *p;
   p=malloc(sizeof(char)*5);
   *p=1;
-  // free(p);
   free(p);
-  int aaa;
-  float bb=aaa;
+  // free(p); 
   printf("%s,%d\n", "Hellow",*(a));
   return 0;
 }
