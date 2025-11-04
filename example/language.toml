@@ -1,6 +1,6 @@
 [language-server.clasangd]
 command="clasangd"
-args =["--verbose","--name","/tmp/clasangd"]
+args =["--verbose","1","--name","/tmp/clasangd"]
 [[language]]
 name="c"
 language-servers=["clasangd"]

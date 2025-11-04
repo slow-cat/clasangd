@@ -1,2 +1,2 @@
 #!/bin/sh
-watch "grep -Po '\[clasangd\]\K(.*)' <(tail -n25 helix.log)"
+watch "grep -m 25 -Po '\[clasangd\]\K(.*)' <(tac < helix.log)"

@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use notify::event::{EventKind, ModifyKind};
+use notify::{Event, RecursiveMode, Watcher};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fs::{File, read_to_string},
     io::ErrorKind,
-    path::PathBuf,
+    path::Path,
     sync::Arc,
 };
 use tokio::{
@@ -19,27 +21,36 @@ use tokio::{
 struct Args {
     #[arg(short, long,help="log file basename,or preferred log location like /tmp/clasangd",default_value_t=("/tmp/clasangd").to_string())]
     name: String,
-    #[arg(short, long, help = "eprint lsp-log", default_value_t = false)]
-    verbose: bool,
+    #[arg(short, long, help = "set verbose level", default_value_t = 0)]
+    verbose: u8,
 }
-static mut IS_VERBOSE: bool = false;
+static mut IS_VERBOSE: u8 = 0;
 
 #[derive(Default)]
 struct DiagStore {
     // uri("file:///...") -> diagnostics(JSON array)
     clang: HashMap<String, Vec<Value>>,
     logs: HashMap<String, Vec<Value>>,
+    saved_uri: String,
 }
 
 impl DiagStore {
     fn set_logs(&mut self, logs: HashMap<String, Vec<Value>>) {
         self.logs = logs;
     }
-
     fn set_clang(&mut self, uri: &str, diags: Vec<Value>) {
         self.clang.insert(uri.to_string(), diags);
     }
-
+    // fn all_uris(&self) -> Vec<String> {
+    //     let mut uris_tree: BTreeSet<String> = BTreeSet::new();
+    //     for k in self.clang.keys() {
+    //         uris_tree.insert(k.clone());
+    //     }
+    //     for k in self.logs.keys() {
+    //         uris_tree.insert(k.clone());
+    //     }
+    //     uris_tree.into_iter().collect()
+    // }
     fn merged_for(&self, uri: &str) -> Vec<Value> {
         // 同じ range+severity+source+message は1個にまとめる
         #[derive(Hash, Eq, PartialEq)]
@@ -104,7 +115,7 @@ async fn main() -> Result<()> {
         eprintln!("[clasangd] failed to create {}  error: {:#}", &build_log, e);
     } else {
         unsafe {
-            if IS_VERBOSE {
+            if 0 < IS_VERBOSE {
                 eprintln!("[clasangd] succesed to create {}", &build_log);
             }
         }
@@ -113,7 +124,7 @@ async fn main() -> Result<()> {
         eprintln!("[clasangd] failed to create {}  error: {:#}", &run_log, e);
     } else {
         unsafe {
-            if IS_VERBOSE {
+            if 0 < IS_VERBOSE {
                 eprintln!("[clasangd] succesed to create {}", &run_log);
             }
         }
@@ -136,23 +147,69 @@ async fn main() -> Result<()> {
     let client_writer: SharedClientWriter = Arc::new(Mutex::new(io::stdout()));
 
     let store: SharedStore = Arc::new(Mutex::new(DiagStore::default()));
+    let (save_tx, mut save_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (change_tx, mut change_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
     // client -> server
-    let t1 = {
+    let client2server = {
         let server_writer = server_writer.clone();
         let store = store.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                client_to_server_loop(client_reader, server_writer, store, &build_log, &run_log)
-                    .await
+                client_to_server_loop(client_reader, server_writer, store.clone(), save_tx).await
             {
                 eprintln!("[clasangd] client_to_server error: {:#}", e);
             }
         })
     };
+    let detect_change = {
+        let change_tx = change_tx.clone();
+        let build_log = build_log.clone();
+        let run_log = run_log.clone();
+        tokio::spawn(async move {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+            let mut watcher = notify::recommended_watcher(move |res: Result<Event, _>| {
+                if let Ok(event) = res {
+                    let _ = tx.blocking_send(event);
+                }
+            })
+            .unwrap();
+            watcher
+                .watch(Path::new(&build_log), RecursiveMode::NonRecursive)
+                .unwrap();
+            watcher
+                .watch(Path::new(&run_log), RecursiveMode::NonRecursive)
+                .unwrap();
+            while let Some(event) = rx.recv().await {
+                match event.kind {
+                    EventKind::Modify(ModifyKind::Data(_)) => {
+                        let _ = change_tx.send(());
+                    }
+                    _ => {}
+                }
+            }
+        })
+    };
+    let publish2server = {
+        let client_writer = client_writer.clone();
+        let store = store.clone();
+        tokio::spawn(async move {
+            while let Some(_) = change_rx.recv().await {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                if let Err(e) = update_logs_store(store.clone(), &build_log, &run_log).await {
+                    eprintln!("[clasangd] Failed to update logs: {:#}", e);
+                    continue;
+                }
+                if let Err(e) = publish_all_diagnostics(store.clone(), client_writer.clone()).await
+                {
+                    eprintln!("[clasangd] Failed to publish diagnostics: {:#}", e);
+                }
+            }
+        })
+    };
 
     // server -> client
-    let t2 = {
+    let server2client = {
         let server_writer = server_writer.clone();
         let client_writer = client_writer.clone();
         let store = store.clone();
@@ -165,7 +222,7 @@ async fn main() -> Result<()> {
         })
     };
 
-    let _ = tokio::join!(t1, t2);
+    let _ = tokio::join!(server2client, detect_change, publish2server, client2server);
     Ok(())
 }
 
@@ -226,8 +283,7 @@ async fn client_to_server_loop<R>(
     mut client_reader: R,
     server_writer: SharedServerWriter,
     store: SharedStore,
-    build_log: &str,
-    run_log: &str,
+    save_rx: tokio::sync::mpsc::UnboundedSender<()>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -241,15 +297,32 @@ where
                 break;
             }
         };
+        unsafe {
+            if 0 < IS_VERBOSE {
+                eprintln!("[clasangd] receive: {}", msg.get("method").unwrap());
+                if 1 < IS_VERBOSE {
+                    eprintln!(
+                        "[clasangd] full message: {}",
+                        serde_json::to_string(&msg).unwrap_or_default()
+                    );
+                }
+            }
+        }
 
-        eprintln!("[clasangd] receive: {}", msg.get("method").unwrap());
-        //  didSave のときにログを読んでstoreを更新（publishはclangdからの応答時に行う）
-        // 少し待たないといけないのと連続で受け取れない問題あるので
-        // if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/didSave") {
-        //     update_logs_store(store.clone()).await?;
-        // }
-        if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
-            update_logs_store(store.clone(), build_log, run_log).await?;
+        if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/didSave") {
+            let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
+
+            let uri = params
+                .get("textDocument")
+                .cloned()
+                .unwrap_or_else(|| json!({}))
+                .get("uri")
+                .and_then(|u| u.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let mut st = store.lock().await;
+            st.saved_uri = uri;
+            let _ = save_rx.send(());
         }
 
         // clangd へ転送
@@ -315,7 +388,7 @@ async fn handle_publish_from_clangd(
         .cloned()
         .unwrap_or_default();
     unsafe {
-        if IS_VERBOSE {
+        if 0 < IS_VERBOSE {
             eprintln!(
                 "[clasangd] Received from clangd for {}: {} diagnostics",
                 uri,
@@ -332,12 +405,17 @@ async fn handle_publish_from_clangd(
     // 合成して publish
     let merged = {
         let st = store.lock().await;
-        eprintln!(
-            "[clasangd] Publishing for {}: {} clang diags, {} log diags",
-            uri,
-            st.clang.get(&uri).map(|v| v.len()).unwrap_or(0),
-            st.logs.get(&uri).map(|v| v.len()).unwrap_or(0)
-        );
+        unsafe {
+            if 0 < IS_VERBOSE {
+                eprintln!(
+                    "[clasangd] Publishing {}.ver for {}: {} clang diags, {} log diags",
+                    version,
+                    uri,
+                    st.clang.get(&uri).map(|v| v.len()).unwrap_or(0),
+                    st.logs.get(&uri).map(|v| v.len()).unwrap_or(0)
+                );
+            }
+        }
         st.merged_for(&uri)
     };
 
@@ -355,21 +433,51 @@ async fn handle_publish_from_clangd(
     write_lsp_message(&mut *w, &out_msg).await?;
     Ok(())
 }
+async fn publish_all_diagnostics(
+    store: SharedStore,
+    client_writer: SharedClientWriter,
+) -> Result<()> {
+    let st = store.lock().await;
+    let uri = st.saved_uri.clone();
+    let merged = { st.merged_for(&uri) };
+    let out_msg = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": uri,
+            "version": null,
+            "diagnostics": merged
+        }
+    });
+    let mut w = client_writer.lock().await;
+    write_lsp_message(&mut *w, &out_msg).await?;
+    unsafe {
+        if 0 < IS_VERBOSE {
+            eprintln!(
+                "[clasangd] Publishing at didSave for {}: {} clang diags, {} log diags",
+                uri,
+                st.clang.get(&uri).map(|v| v.len()).unwrap_or(0),
+                st.logs.get(&uri).map(|v| v.len()).unwrap_or(0)
+            );
+        }
+    }
 
+    Ok(())
+}
 async fn update_logs_store(store: SharedStore, build_log: &str, run_log: &str) -> Result<()> {
     let txt = read_to_string(build_log).unwrap_or_default()
         + &read_to_string(run_log).unwrap_or_default();
     unsafe {
-        if IS_VERBOSE {
+        if 0 < IS_VERBOSE {
             // eprintln!("[clasangd] {}", txt);
             eprintln!("[clasangd] Reading logs, total size: {} bytes", txt.len());
         }
     }
-
-    let logs_by_file = parse_diagnostics(&txt); // uri -> Vec<diag>
+    let mut st = store.lock().await;
+    let logs_by_file = parse_diagnostics(&txt, &st.saved_uri); // uri -> Vec<diag>
 
     unsafe {
-        if IS_VERBOSE {
+        if 0 < IS_VERBOSE {
             eprintln!("[clasangd] Parsed logs for {} files", logs_by_file.len());
         }
     }
@@ -377,7 +485,6 @@ async fn update_logs_store(store: SharedStore, build_log: &str, run_log: &str) -
         eprintln!("[clasangd]   {}: {} diagnostics", uri, diags.len());
     }
 
-    let mut st = store.lock().await;
     st.set_logs(logs_by_file);
 
     Ok(())
@@ -385,20 +492,20 @@ async fn update_logs_store(store: SharedStore, build_log: &str, run_log: &str) -
 
 // ====================== ログパーサ ======================
 
-fn parse_diagnostics(text: &str) -> HashMap<String, Vec<Value>> {
+fn parse_diagnostics(text: &str, uri: &str) -> HashMap<String, Vec<Value>> {
     let mut out: HashMap<String, Vec<Value>> = HashMap::new();
-    parse_oneline(text, &mut out);
-    parse_san_error(text, &mut out);
+    parse_oneline(text, uri, &mut out);
+    parse_san_error(text, uri, &mut out);
     out
 }
-fn parse_oneline(text: &str, out: &mut HashMap<String, Vec<Value>>) {
+fn parse_oneline(text: &str, saved_uri: &str, out: &mut HashMap<String, Vec<Value>>) {
     // ex. /path/to/a.c:12:34: error: message...
+    // ex. test.c:12:34: ... it is relative form in build log
     let re = Regex::new(r"(?m)^(.+?):(\d+):(\d+):\s*(error|warning|runtime error):\s*(.*)$")
         .expect("invalid regex");
 
     for cap in re.captures_iter(text) {
-        let file = canonicalize_lossy(&cap[1]);
-        let uri = format!("file://{}", file);
+        let uri = make_uri(&cap[1], saved_uri);
         let line = cap[2].parse::<u64>().unwrap_or(1).saturating_sub(1);
         let col = cap[3].parse::<u64>().unwrap_or(1).saturating_sub(1);
         let sev = if &cap[4] == "warning" { 2 } else { 1 }; // 1=Error,2=Warning
@@ -417,7 +524,7 @@ fn parse_oneline(text: &str, out: &mut HashMap<String, Vec<Value>>) {
         out.entry(uri).or_default().push(diag);
     }
 }
-fn parse_san_error(text: &str, out: &mut HashMap<String, Vec<Value>>) {
+fn parse_san_error(text: &str, saved_uri: &str, out: &mut HashMap<String, Vec<Value>>) {
     // ex.
     // =================================================================
     // ==2481858==ERROR: AddressSanitizer: attempting double-free on 0x7b8f5e9e0010 in thread T0:
@@ -466,8 +573,7 @@ fn parse_san_error(text: &str, out: &mut HashMap<String, Vec<Value>>) {
             if frame_num != 1 {
                 continue;
             }
-            let file = canonicalize_lossy(&cap[2]);
-            let uri = format!("file://{}", file);
+            let uri = make_uri(&cap[2], saved_uri);
             let line = cap[3].parse::<u64>().unwrap_or(1).saturating_sub(1);
             let col = cap[4].parse::<u64>().unwrap_or(1).saturating_sub(1);
             let sev = 1; // 1=Error,2=Warning
@@ -487,9 +593,19 @@ fn parse_san_error(text: &str, out: &mut HashMap<String, Vec<Value>>) {
     }
 }
 
-fn canonicalize_lossy(p: &str) -> String {
-    std::fs::canonicalize(p)
-        .unwrap_or_else(|_| PathBuf::from(p))
-        .display()
-        .to_string()
+fn make_uri(p: &str, uri: &str) -> String {
+    match std::fs::canonicalize(p) {
+        Ok(path) => format!("file://{}", path.display().to_string()),
+        Err(e) => {
+            unsafe {
+                if 0 < IS_VERBOSE {
+                    eprintln!(
+                        "[clasangd] failed to canonicalize {} use {} instead... error: {:#}",
+                        p, uri, e
+                    );
+                }
+            }
+            uri.to_string()
+        }
+    }
 }
