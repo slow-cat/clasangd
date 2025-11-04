@@ -17,7 +17,7 @@ use tokio::{
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long,help="C/C++ source file basename,or preferred log location like /tmp/source.c",default_value_t=("/tmp/source.c").to_string())]
+    #[arg(short, long,help="log file basename,or preferred log location like /tmp/clasangd",default_value_t=("/tmp/clasangd").to_string())]
     name: String,
     #[arg(short, long, help = "eprint lsp-log", default_value_t = false)]
     verbose: bool,
@@ -38,13 +38,6 @@ impl DiagStore {
 
     fn set_clang(&mut self, uri: &str, diags: Vec<Value>) {
         self.clang.insert(uri.to_string(), diags);
-    }
-
-    fn all_uris(&self) -> Vec<String> {
-        let mut set = BTreeSet::new();
-        set.extend(self.clang.keys().cloned());
-        set.extend(self.logs.keys().cloned());
-        set.into_iter().collect()
     }
 
     fn merged_for(&self, uri: &str) -> Vec<Value> {
@@ -364,11 +357,11 @@ async fn handle_publish_from_clangd(
 }
 
 async fn update_logs_store(store: SharedStore, build_log: &str, run_log: &str) -> Result<()> {
-    // ログを読む（ここは sync fs でもOKだが、一応 blocking を避けるなら tokio::fs にしてもよい）
     let txt = read_to_string(build_log).unwrap_or_default()
         + &read_to_string(run_log).unwrap_or_default();
     unsafe {
         if IS_VERBOSE {
+            // eprintln!("[clasangd] {}", txt);
             eprintln!("[clasangd] Reading logs, total size: {} bytes", txt.len());
         }
     }
@@ -384,13 +377,8 @@ async fn update_logs_store(store: SharedStore, build_log: &str, run_log: &str) -
         eprintln!("[clasangd]   {}: {} diagnostics", uri, diags.len());
     }
 
-    // ログが空でない場合のみstoreを更新（空ログで上書きしない）
-    // if !logs_by_file.is_empty() {
     let mut st = store.lock().await;
     st.set_logs(logs_by_file);
-    // } else {
-    // eprintln!("[clasangd] Skipping empty log update");
-    // }
 
     Ok(())
 }
