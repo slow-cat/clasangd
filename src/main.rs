@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
+use clap::Parser;
 use regex::Regex;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
+    fs::{File, read_to_string},
     io::ErrorKind,
     path::PathBuf,
     sync::Arc,
@@ -12,9 +14,15 @@ use tokio::{
     process::Command,
     sync::Mutex,
 };
-
-const BUILD_LOG: &str = "/tmp/clang_build_error.log";
-const RUN_LOG: &str = "/tmp/clang_run_error.log";
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long,help="C/C++ source file basename,or preferred log location like /tmp/source.c",default_value_t=("/tmp/source.c").to_string())]
+    name: String,
+    #[arg(short, long, help = "eprint lsp-log", default_value_t = false)]
+    verbose: bool,
+}
+static mut IS_VERBOSE: bool = false;
 
 #[derive(Default)]
 struct DiagStore {
@@ -90,6 +98,33 @@ type SharedServerWriter = Arc<Mutex<tokio::process::ChildStdin>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+    let is_verbose = args.verbose;
+    let file_name = args.name;
+    let build_log = file_name.to_string() + "_build.log";
+    let run_log = file_name.to_string() + "_run.log";
+    unsafe {
+        IS_VERBOSE = is_verbose;
+    }
+
+    if let Err(e) = File::create(build_log.clone()) {
+        eprintln!("[clasangd] failed to create {}  error: {:#}", &build_log, e);
+    } else {
+        unsafe {
+            if IS_VERBOSE {
+                eprintln!("[clasangd] succesed to create {}", &build_log);
+            }
+        }
+    }
+    if let Err(e) = File::create(run_log.clone()) {
+        eprintln!("[clasangd] failed to create {}  error: {:#}", &run_log, e);
+    } else {
+        unsafe {
+            if IS_VERBOSE {
+                eprintln!("[clasangd] succesed to create {}", &run_log);
+            }
+        }
+    }
     // clangd 起動
     let mut child = Command::new("clangd")
         .stdin(std::process::Stdio::piped())
@@ -112,11 +147,11 @@ async fn main() -> Result<()> {
     // client -> server
     let t1 = {
         let server_writer = server_writer.clone();
-        let client_writer = client_writer.clone();
         let store = store.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                client_to_server_loop(client_reader, server_writer, client_writer, store).await
+                client_to_server_loop(client_reader, server_writer, store, &build_log, &run_log)
+                    .await
             {
                 eprintln!("[clasangd] client_to_server error: {:#}", e);
             }
@@ -197,8 +232,9 @@ where
 async fn client_to_server_loop<R>(
     mut client_reader: R,
     server_writer: SharedServerWriter,
-    client_writer: SharedClientWriter,
     store: SharedStore,
+    build_log: &str,
+    run_log: &str,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -213,9 +249,14 @@ where
             }
         };
 
-        // didSave のときにログを読んでstoreを更新（publishはclangdからの応答時に行う）
-        if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/didSave") {
-            update_logs_store(store.clone()).await?;
+        eprintln!("[clasangd] receive: {}", msg.get("method").unwrap());
+        //  didSave のときにログを読んでstoreを更新（publishはclangdからの応答時に行う）
+        // 少し待たないといけないのと連続で受け取れない問題あるので
+        // if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/didSave") {
+        //     update_logs_store(store.clone()).await?;
+        // }
+        if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/didChange") {
+            update_logs_store(store.clone(), build_log, run_log).await?;
         }
 
         // clangd へ転送
@@ -248,6 +289,7 @@ where
 
         // publishDiagnostics だけ横取りして合成、それ以外はそのまま転送
         let method = msg.get("method").and_then(|m| m.as_str());
+
         if method == Some("textDocument/publishDiagnostics") {
             handle_publish_from_clangd(msg, client_writer.clone(), store.clone()).await?;
         } else {
@@ -279,12 +321,15 @@ async fn handle_publish_from_clangd(
         .and_then(|d| d.as_array())
         .cloned()
         .unwrap_or_default();
-
-    eprintln!(
-        "[clasangd] Received from clangd for {}: {} diagnostics",
-        uri,
-        clang_diags.len()
-    );
+    unsafe {
+        if IS_VERBOSE {
+            eprintln!(
+                "[clasangd] Received from clangd for {}: {} diagnostics",
+                uri,
+                clang_diags.len()
+            );
+        }
+    }
 
     {
         let mut st = store.lock().await;
@@ -318,16 +363,23 @@ async fn handle_publish_from_clangd(
     Ok(())
 }
 
-async fn update_logs_store(store: SharedStore) -> Result<()> {
+async fn update_logs_store(store: SharedStore, build_log: &str, run_log: &str) -> Result<()> {
     // ログを読む（ここは sync fs でもOKだが、一応 blocking を避けるなら tokio::fs にしてもよい）
-    let txt = std::fs::read_to_string(BUILD_LOG).unwrap_or_default()
-        + &std::fs::read_to_string(RUN_LOG).unwrap_or_default();
-
-    eprintln!("[clasangd] Reading logs, total size: {} bytes", txt.len());
+    let txt = read_to_string(build_log).unwrap_or_default()
+        + &read_to_string(run_log).unwrap_or_default();
+    unsafe {
+        if IS_VERBOSE {
+            eprintln!("[clasangd] Reading logs, total size: {} bytes", txt.len());
+        }
+    }
 
     let logs_by_file = parse_diagnostics(&txt); // uri -> Vec<diag>
 
-    eprintln!("[clasangd] Parsed logs for {} files", logs_by_file.len());
+    unsafe {
+        if IS_VERBOSE {
+            eprintln!("[clasangd] Parsed logs for {} files", logs_by_file.len());
+        }
+    }
     for (uri, diags) in &logs_by_file {
         eprintln!("[clasangd]   {}: {} diagnostics", uri, diags.len());
     }

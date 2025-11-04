@@ -1,0 +1,9 @@
+[language-server.clasangd]
+command="clasangd"
+args =["--verbose","--name","/tmp/%{buffer_name}"]
+[[language]]
+name="c"
+language-servers=["clasangd"]
+[[language]]
+name="cpp"
+language-servers=["clasangd"]

@@ -1,8 +1,1 @@
-*
-!src/
-!src/*rs
-!test.c
-!Cargo.*
-!.gitignore
-!helix.log
-!README.md
+/target
