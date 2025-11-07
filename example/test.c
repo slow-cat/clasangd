@@ -9,7 +9,7 @@ int main(void) {
   p=malloc(sizeof(char)*5);
   *p=1;
   free(p);
-  free(p); 
+  // free(p); 
   printf("%s,%d\n", "Hellow",*(a));
   return 0;
 }

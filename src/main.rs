@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
     let client_writer: SharedClientWriter = Arc::new(Mutex::new(io::stdout()));
 
     let store: SharedStore = Arc::new(Mutex::new(DiagStore::default()));
-    let (save_tx, mut save_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    // let (save_tx, _save_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let (change_tx, mut change_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
     // client -> server
@@ -155,9 +155,7 @@ async fn main() -> Result<()> {
         let server_writer = server_writer.clone();
         let store = store.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                client_to_server_loop(client_reader, server_writer, store.clone(), save_tx).await
-            {
+            if let Err(e) = client_to_server_loop(client_reader, server_writer, store).await {
                 eprintln!("[clasangd] client_to_server error: {:#}", e);
             }
         })
@@ -283,7 +281,7 @@ async fn client_to_server_loop<R>(
     mut client_reader: R,
     server_writer: SharedServerWriter,
     store: SharedStore,
-    save_rx: tokio::sync::mpsc::UnboundedSender<()>,
+    // save_rx: tokio::sync::mpsc::UnboundedSender<()>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -322,7 +320,7 @@ where
                 .to_string();
             let mut st = store.lock().await;
             st.saved_uri = uri;
-            let _ = save_rx.send(());
+            // let _ = save_rx.send(());
         }
 
         // clangd へ転送
