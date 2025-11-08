@@ -1,4 +1,5 @@
 use crate::IS_VERBOSE;
+// use crate::SharedClientReader;
 use crate::SharedClientWriter;
 use crate::SharedServerWriter;
 use crate::SharedStore;
@@ -52,7 +53,6 @@ where
             st.saved_uri = uri;
             // let _ = save_rx.send(());
         }
-
         // clangd へ転送
         {
             let mut w = server_writer.lock().await;
@@ -98,3 +98,42 @@ where
     }
     Ok(())
 }
+// pub async fn init(client_reader: SharedClientReader, store: SharedStore) {
+//     loop {
+//         let mut reader = client_reader.lock().await;
+//         let msg = match lsp_io::read_lsp_message(&mut *reader).await {
+//             Ok(v) => v,
+//             Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
+//             Err(e) => {
+//                 eprintln!("[clasangd] read from client failed: {:#}", e);
+//                 break;
+//             }
+//         };
+//         unsafe {
+//             if 0 < IS_VERBOSE {
+//                 eprintln!("[clasangd] receive: {}", msg.get("method").unwrap());
+//                 if 1 < IS_VERBOSE {
+//                     eprintln!(
+//                         "[clasangd] json: {}",
+//                         serde_json::to_string(&msg).unwrap_or_default()
+//                     );
+//                 }
+//             }
+//         }
+
+//         if msg.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+//             let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
+
+//             let root_uri = params
+//                 .get("rootUri")
+//                 .and_then(|u| u.as_str())
+//                 .unwrap_or_default()
+//                 .to_string();
+//             let mut st = store.lock().await;
+//             st.root_uri = root_uri;
+//             drop(reader); // Mutexを解放
+//             break;
+//         }
+//         drop(reader); // ループ内でも解放
+//     }
+// }
