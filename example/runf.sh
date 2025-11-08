@@ -1,6 +1,6 @@
 #!/usr/bin/sh
 
-file="$1"
+file="$(realpath "$1")"
 input="$(cat)"
 # STDIN=$(grep -Po 'STDIN="\K[^"]*' "$file")
 # FILEIN=$(grep -Po 'FILEIN="\K[^"]*' "$file")

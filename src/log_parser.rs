@@ -12,14 +12,19 @@ pub fn parse_diagnostics(text: &str, uri: &str) -> HashMap<String, Vec<Value>> {
 pub fn parse_oneline(text: &str, saved_uri: &str, out: &mut HashMap<String, Vec<Value>>) {
     // ex. /path/to/a.c:12:34: error: message...
     // ex. test.c:12:34: ... it is relative form in build log
-    let re = Regex::new(r"(?m)^(.+?):(\d+):(\d+):\s*(error|warning|runtime error):\s*(.*)$")
+    let re = Regex::new(r"(?m)^(.+?):(\d+):(\d+):\s*(error|warning|runtime error|note):\s*(.*)$")
         .expect("invalid regex");
 
     for cap in re.captures_iter(text) {
         let uri = make_uri(&cap[1], saved_uri);
         let line = cap[2].parse::<u64>().unwrap_or(1).saturating_sub(1);
         let col = cap[3].parse::<u64>().unwrap_or(1).saturating_sub(1);
-        let sev = if &cap[4] == "warning" { 2 } else { 1 }; // 1=Error,2=Warning
+        let sev = match &cap[4] {
+            "note" => 3,
+            "warning" => 2,
+            "error" | "runtime error" => 1,
+            _ => 1,
+        };
         let msg = cap[5].to_string();
 
         let diag = json!({

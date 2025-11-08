@@ -10,10 +10,11 @@ use std::{
     sync::Arc,
 };
 use tokio::{
-    io::{self, BufReader, Stdout},
+    io::{self, BufReader, Stdin, Stdout},
     process::Command,
     sync::Mutex,
 };
+
 mod log_parser;
 mod lsp_diagnosis;
 mod lsp_io;
@@ -23,6 +24,8 @@ mod lsp_mainloop;
 struct Args {
     #[arg(short, long,help="log file basename,or preferred log location like /tmp/clasangd",default_value_t=("/tmp/clasangd").to_string())]
     name: String,
+    #[arg(short, long,help="lsp path e.g. clangd or jdtls is also acceptable",default_value_t=("clangd").to_string())]
+    lsp: String,
     #[arg(short, long, help = "set verbose level", default_value_t = 0)]
     verbose: u8,
 }
@@ -34,6 +37,7 @@ struct DiagStore {
     clang: HashMap<String, Vec<Value>>,
     logs: HashMap<String, Vec<Value>>,
     saved_uri: String,
+    root_uri: String,
 }
 
 impl DiagStore {
@@ -88,6 +92,7 @@ impl DiagStore {
 }
 
 type SharedStore = Arc<Mutex<DiagStore>>;
+// type SharedClientReader = Arc<Mutex<BufReader<Stdin>>>;
 type SharedClientWriter = Arc<Mutex<Stdout>>;
 type SharedServerWriter = Arc<Mutex<tokio::process::ChildStdin>>;
 
@@ -96,8 +101,11 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let is_verbose = args.verbose;
     let file_name = args.name;
+    let lsp_path = args.lsp;
     let build_log = file_name.to_string() + "_build.log";
     let run_log = file_name.to_string() + "_run.log";
+    // let client_reader: SharedClientReader = Arc::new(Mutex::new(BufReader::new(io::stdin())));
+    let store: SharedStore = Arc::new(Mutex::new(DiagStore::default()));
     unsafe {
         IS_VERBOSE = is_verbose;
     }
@@ -120,13 +128,16 @@ async fn main() -> Result<()> {
             }
         }
     }
+    // init(store.clone());
     // clangd 起動
-    let mut child = Command::new("clangd")
+    let mut child = Command::new(lsp_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .context("failed to spawn clangd")?;
+    let client_reader: BufReader<Stdin> = BufReader::new(io::stdin());
+    let client_writer: SharedClientWriter = Arc::new(Mutex::new(io::stdout()));
 
     let server_stdout = child.stdout.take().context("no clangd stdout")?;
     let server_reader = BufReader::new(server_stdout);
@@ -134,10 +145,6 @@ async fn main() -> Result<()> {
     let server_stdin = child.stdin.take().context("no clangd stdin")?;
     let server_writer: SharedServerWriter = Arc::new(Mutex::new(server_stdin));
 
-    let client_reader = BufReader::new(io::stdin());
-    let client_writer: SharedClientWriter = Arc::new(Mutex::new(io::stdout()));
-
-    let store: SharedStore = Arc::new(Mutex::new(DiagStore::default()));
     // let (save_tx, _save_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let (change_tx, mut change_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
