@@ -6,7 +6,7 @@ use crate::SharedStore;
 use crate::lsp_diagnosis;
 use crate::lsp_io;
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::io::ErrorKind;
 use tokio::io::AsyncRead;
 pub async fn client_to_server_loop<R>(
@@ -98,7 +98,54 @@ where
     }
     Ok(())
 }
-pub fn init(store: SharedStore) {
+// pub fn init() -> Result<String, std::io::Error> {
+//     unsafe {
+//         if 0 < IS_VERBOSE {
+//             eprintln!("[clasangd] start init");
+//         }
+//     }
+//     loop {
+//         let mut reader = std::io::BufReader::new(std::io::stdin());
+//         let msg = match lsp_io::read_lsp_message_sync(&mut reader) {
+//             Ok(v) => v,
+//             Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Err(e),
+//             Err(e) => {
+//                 eprintln!("[clasangd] read from client failed: {:#}", e);
+//                 return Err(e);
+//             }
+//         };
+//         unsafe {
+//             if 0 < IS_VERBOSE {
+//                 eprintln!("[clasangd] init");
+//                 eprintln!("[clasangd] receive : {}", msg.get("method").unwrap());
+//                 if 1 < IS_VERBOSE {
+//                     eprintln!(
+//                         "[clasangd] json: {}",
+//                         serde_json::to_string(&msg).unwrap_or_default()
+//                     );
+//                 }
+//             }
+//         }
+
+//         if msg.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+//             let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
+
+//             let root_uri = params
+//                 .get("rootUri")
+//                 .and_then(|u| u.as_str())
+//                 .unwrap_or_default()
+//                 .to_string();
+//             unsafe {
+//                 if 0 < IS_VERBOSE {
+//                     eprintln!("[clasangd] rooturi={}", &root_uri);
+//                 }
+//             }
+
+//             return Ok(root_uri);
+//         }
+//     }
+// }
+pub fn init() -> Result<Value, std::io::Error> {
     unsafe {
         if 0 < IS_VERBOSE {
             eprintln!("[clasangd] start init");
@@ -108,10 +155,10 @@ pub fn init(store: SharedStore) {
         let mut reader = std::io::BufReader::new(std::io::stdin());
         let msg = match lsp_io::read_lsp_message_sync(&mut reader) {
             Ok(v) => v,
-            Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Err(e),
             Err(e) => {
                 eprintln!("[clasangd] read from client failed: {:#}", e);
-                break;
+                return Err(e);
             }
         };
         unsafe {
@@ -128,21 +175,7 @@ pub fn init(store: SharedStore) {
         }
 
         if msg.get("method").and_then(|m| m.as_str()) == Some("initialize") {
-            let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
-
-            let root_uri = params
-                .get("rootUri")
-                .and_then(|u| u.as_str())
-                .unwrap_or_default()
-                .to_string();
-            // let mut st = store.blocking_lock();
-            // st.root_uri = root_uri;
-            // unsafe {
-            //     if 0 < IS_VERBOSE {
-            //         eprintln!("[clasangd] rooturi={}", &st.root_uri);
-            //     }
-            // }
-            break;
+            return Ok(msg);
         }
     }
 }

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use notify::event::{EventKind, ModifyKind};
 use notify::{Event, RecursiveMode, Watcher};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -128,7 +128,22 @@ async fn main() -> Result<()> {
             }
         }
     }
-    lsp_mainloop::init(store.clone());
+    // // init
+    // let init_msg = lsp_mainloop::init().unwrap();
+
+    // let root_uri = init_msg
+    //     .get("params")
+    //     .and_then(|p| p.get("rootUri"))
+    //     .and_then(|u| u.as_str())
+    //     .unwrap_or_default()
+    //     .to_string();
+    // unsafe {
+    //     if 0 < IS_VERBOSE {
+    //         eprintln!("[clasangd] rooturi={}", &root_uri);
+    //     }
+    // }
+    // store.lock().await.root_uri = root_uri;
+
     // clangd 起動
     let mut child = Command::new(lsp_path)
         .stdin(std::process::Stdio::piped())
@@ -139,11 +154,24 @@ async fn main() -> Result<()> {
     let client_reader: BufReader<Stdin> = BufReader::new(io::stdin());
     let client_writer: SharedClientWriter = Arc::new(Mutex::new(io::stdout()));
 
-    let server_stdout = child.stdout.take().context("no clangd stdout")?;
-    let server_reader = BufReader::new(server_stdout);
-
     let server_stdin = child.stdin.take().context("no clangd stdin")?;
     let server_writer: SharedServerWriter = Arc::new(Mutex::new(server_stdin));
+
+    // // Send initialize to clangd
+    // {
+    //     let mut w = server_writer.lock().await;
+    //     lsp_io::write_lsp_message(&mut *w, &init_msg).await?;
+    // }
+
+    // // Wait for initialize response from clangd and forward to client
+    // {
+    //     let server_stdout = child.stdout.take().context("no clangd stdout")?;
+    //     let server_reader = BufReader::new(server_stdout);
+    //     let mut r = server_reader;
+    //     let init_response = lsp_io::read_lsp_message(&mut r).await?;
+    //     let mut w = client_writer.lock().await;
+    //     lsp_io::write_lsp_message(&mut *w, &init_response).await?;
+    // }
 
     // let (save_tx, _save_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let (change_tx, mut change_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
@@ -217,6 +245,8 @@ async fn main() -> Result<()> {
 
     // server -> client
     let server2client = {
+        let server_stdout = child.stdout.take().context("no clangd stdout")?;
+        let server_reader = BufReader::new(server_stdout);
         let server_writer = server_writer.clone();
         let client_writer = client_writer.clone();
         let store = store.clone();
