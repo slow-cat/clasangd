@@ -40,15 +40,28 @@ where
 
         if msg.get("method").and_then(|m| m.as_str()) == Some("textDocument/didSave") {
             let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
+            //     // let root_uri = init_msg
+            //     //     .get("params")
+            //     //     .and_then(|p| p.get("rootUri"))
+            //     //     .and_then(|u| u.as_str())
+            //     //     .unwrap_or_default()
+            //     //     .to_string();
 
             let uri = params
                 .get("textDocument")
-                .cloned()
-                .unwrap_or_else(|| json!({}))
-                .get("uri")
+                .and_then(|u| u.get("uri"))
                 .and_then(|u| u.as_str())
                 .unwrap_or_default()
                 .to_string();
+            // let uri = params
+            //     .get("textDocument")
+            //     .cloned()
+            //     .unwrap_or_else(|| json!({}))
+            //     .get("uri")
+            //     .and_then(|u| u.as_str())
+            //     .and_then(|u| u.as_str())
+            //     .unwrap_or_default()
+            //     .to_string();
             let mut st = store.lock().await;
             st.saved_uri = uri;
             // let _ = save_rx.send(());
@@ -61,6 +74,56 @@ where
     }
     Ok(())
 }
+// pub async fn client_stdout__loop<R>(
+//     mut client_reader: R,
+//     store: SharedStore,
+// ) -> Result<()>
+// where
+//     R: AsyncRead + Unpin,
+// {
+//     loop {
+//         let msg = match lsp_io::read_lsp_message(&mut client_reader).await {
+//             Ok(v) => v,
+//             Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
+//             Err(e) => {
+//                 eprintln!("[clasangd] read from client failed: {:#}", e);
+//                 break;
+//             }
+//         };
+//         unsafe {
+//             if 0 < IS_VERBOSE {
+//                 eprintln!("[clasangd] receive: {}", msg.get("method").unwrap());
+//                 if 1 < IS_VERBOSE {
+//                     eprintln!(
+//                         "[clasangd] json: {}",
+//                         serde_json::to_string(&msg).unwrap_or_default()
+//                     );
+//                 }
+//             }
+//         }
+
+//         if msg.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+//             return Ok(msg);
+//         }
+//     // // init
+//     // let init_msg = lsp_mainloop::init().unwrap();
+
+//     // let root_uri = init_msg
+//     //     .get("params")
+//     //     .and_then(|p| p.get("rootUri"))
+//     //     .and_then(|u| u.as_str())
+//     //     .unwrap_or_default()
+//     //     .to_string();
+//     // unsafe {
+//     //     if 0 < IS_VERBOSE {
+//     //         eprintln!("[clasangd] rooturi={}", &root_uri);
+//     //     }
+//     // }
+//     // store.lock().await.root_uri = root_uri;
+//         }
+//     }
+//     Ok(())
+// }
 
 pub async fn server_to_client_loop<R>(
     mut server_reader: R,
