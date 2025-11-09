@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
             }
         }
     }
-    // init(store.clone());
+    lsp_mainloop::init(store.clone());
     // clangd 起動
     let mut child = Command::new(lsp_path)
         .stdin(std::process::Stdio::piped())
