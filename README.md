@@ -24,6 +24,7 @@ Options:
 # ToDo
  - handle set of files  like header and source files
  - wrap not only clangd, like jdtls
+ - splite read_lsp into reading client_stdout part and throwing at lsp_stdin
 # Issue
 ~~It can handle only initial Asan log.
 Maybe, lsp cannot  receive same comment in short span.~~ solved
