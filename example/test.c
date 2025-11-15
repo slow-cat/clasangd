@@ -10,6 +10,6 @@ int main(void) {
   *p=1;
   free(p);
   free(p); 
-  printf("%s,%d\n", "Hellow",*(a));
+  printf("%s,%d\n", "Hello",*(a));
   return 0;
 }
