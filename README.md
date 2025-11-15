@@ -2,11 +2,11 @@
 This program can merge diagnoses from clangd and logs at build or runtime and send them to your editor, as if from a single LSP.
 
 # Usage
-## build
+## Build
 ```bash
   cargo build --release
 ```
-make it accessible
+make it available
 ```bash
   ln -s "${PWD}/target/release/clasangd" ~/.local/bin
 ```
