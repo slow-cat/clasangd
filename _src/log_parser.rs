@@ -1,29 +1,22 @@
 // use crate::prelude::*;
+use crate::IS_VERBOSE;
 use regex::Regex;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
-
-pub fn parse_diagnostics(text: &str, uri: &str, root: &str) -> HashMap<String, Vec<Value>> {
+use std::collections::HashMap;
+pub fn parse_diagnostics(text: &str, uri: &str) -> HashMap<String, Vec<Value>> {
     let mut out: HashMap<String, Vec<Value>> = HashMap::new();
-    parse_oneline(text, uri, root, &mut out);
-    parse_san_error(text, uri, root, &mut out);
-    parse_stacktrace(text, uri, root, &mut out);
+    parse_oneline(text, uri, &mut out);
+    parse_san_error(text, uri, &mut out);
     out
 }
-pub fn parse_oneline(
-    text: &str,
-    saved_uri: &str,
-    root_path: &str,
-    out: &mut HashMap<String, Vec<Value>>,
-) {
+pub fn parse_oneline(text: &str, saved_uri: &str, out: &mut HashMap<String, Vec<Value>>) {
     // ex. /path/to/a.c:12:34: error: message...
     // ex. test.c:12:34: ... it is relative form in build log
     let re = Regex::new(r"(?m)^(.+?):(\d+):(\d+):\s*(error|warning|runtime error|note):\s*(.*)$")
         .expect("invalid regex");
 
     for cap in re.captures_iter(text) {
-        let uri = make_uri(&cap[1], saved_uri, root_path);
+        let uri = make_uri(&cap[1], saved_uri);
         let line = cap[2].parse::<u64>().unwrap_or(1).saturating_sub(1);
         let col = cap[3].parse::<u64>().unwrap_or(1).saturating_sub(1);
         let sev = match &cap[4] {
@@ -47,12 +40,7 @@ pub fn parse_oneline(
         out.entry(uri).or_default().push(diag);
     }
 }
-pub fn parse_san_error(
-    text: &str,
-    saved_uri: &str,
-    root_path: &str,
-    out: &mut HashMap<String, Vec<Value>>,
-) {
+pub fn parse_san_error(text: &str, saved_uri: &str, out: &mut HashMap<String, Vec<Value>>) {
     // ex.
     // =================================================================
     // ==2481858==ERROR: AddressSanitizer: attempting double-free on 0x7b8f5e9e0010 in thread T0:
@@ -101,7 +89,7 @@ pub fn parse_san_error(
             if frame_num != 1 {
                 continue;
             }
-            let uri = make_uri(&cap[2], saved_uri, root_path);
+            let uri = make_uri(&cap[2], saved_uri);
             let line = cap[3].parse::<u64>().unwrap_or(1).saturating_sub(1);
             let col = cap[4].parse::<u64>().unwrap_or(1).saturating_sub(1);
             let sev = 1; // 1=Error,2=Warning
@@ -121,113 +109,19 @@ pub fn parse_san_error(
     }
 }
 
-pub fn make_uri(p: &str, uri: &str, root: &str) -> String {
-    if let Ok(path) = std::fs::canonicalize(p) {
-        return format!("file://{}", path.display());
-    }
-
-    let root_relative = format!("{}/{}", root, p);
-    if let Ok(path) = std::fs::canonicalize(&root_relative) {
-        return format!("file://{}", path.display());
-    }
-
-    if let Some(filename) = Path::new(p).file_name().and_then(|f| f.to_str()) {
-        if let Some(found) = find_file_bfs(root, filename) {
-            return format!("file://{}", found.display());
-        }
-    }
-
-    uri.to_string()
-}
-
-fn find_file_bfs(root: &str, filename: &str) -> Option<PathBuf> {
-    let root_path = Path::new(root);
-    if !root_path.is_dir() {
-        return None;
-    }
-
-    let mut queue = VecDeque::new();
-    queue.push_back(root_path.to_path_buf());
-    let mut visited = HashSet::new();
-
-    while let Some(dir) = queue.pop_front() {
-        if !visited.insert(dir.clone()) {
-            continue;
-        }
-
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-
-                if path.is_file() {
-                    if let Some(name) = path.file_name() {
-                        if name == filename {
-                            return Some(path);
-                        }
-                    }
-                } else if path.is_dir() && !is_ignore_dir(&path) {
-                    queue.push_back(path);
+pub fn make_uri(p: &str, uri: &str) -> String {
+    match std::fs::canonicalize(p) {
+        Ok(path) => format!("file://{}", path.display().to_string()),
+        Err(e) => {
+            unsafe {
+                if 0 < IS_VERBOSE {
+                    eprintln!(
+                        "[clasangd] failed to canonicalize {} use {} instead... error: {:#}",
+                        p, uri, e
+                    );
                 }
             }
-        }
-    }
-
-    None
-}
-
-fn is_ignore_dir(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| {
-            n.starts_with('.')
-                || n == "target"
-                || n == "node_modules"
-                || n == "build"
-                || n == "dist"
-        })
-        .unwrap_or(false)
-}
-
-pub fn parse_stacktrace(
-    text: &str,
-    saved_uri: &str,
-    root_path: &str,
-    out: &mut HashMap<String, Vec<Value>>,
-) {
-    let re_exception = Regex::new(r"(?m)^(?:Exception in thread .+?|Traceback|.*?Error):\s*(.+)")
-        .expect("invalid regex");
-
-    let re_at = Regex::new(r"^\s+at\s+.+?\((.+?):(\d+)\)").expect("invalid regex");
-
-    let mut current_exception: Option<String> = None;
-
-    for line in text.lines() {
-        if let Some(cap) = re_exception.captures(line) {
-            let message = cap.get(1).map(|m| m.as_str()).unwrap_or("Runtime error");
-            current_exception = Some(message.to_string());
-            continue;
-        }
-
-        if let Some(ref exc_msg) = current_exception {
-            if let Some(cap) = re_at.captures(line) {
-                let file = &cap[1];
-                let line_num = cap[2].parse::<u64>().unwrap_or(1).saturating_sub(1);
-                let uri = make_uri(file, saved_uri, root_path);
-
-                let diag = json!({
-                    "range": {
-                        "start": { "line": line_num, "character": 0 },
-                        "end": { "line": line_num, "character": 1 }
-                    },
-                    "severity": 1,
-                    "source": "runtime",
-                    "message": exc_msg
-                });
-
-                out.entry(uri).or_default().push(diag);
-                current_exception = None;
-                continue;
-            }
+            uri.to_string()
         }
     }
 }
