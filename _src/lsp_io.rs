@@ -1,6 +1,6 @@
 // use crate::prelude::*;
 use serde_json::Value;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub async fn read_lsp_message<R>(r: &mut R) -> io::Result<Value>
 where
@@ -38,6 +38,45 @@ where
         .map_err(|e| io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
     Ok(v)
 }
+pub fn read_lsp_message_sync<R>(r: &mut R) -> std::io::Result<Value>
+where
+    R: Read,
+{
+    let mut header = Vec::new();
+    let mut buf = [0u8; 1];
+
+    loop {
+        let n = r.read(&mut buf)?;
+        if n == 0 {
+            if header.is_empty() {
+                return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "eof"));
+            } else {
+                return Err(std::io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "eof in header",
+                ));
+            }
+        }
+        header.push(buf[0]);
+        if header.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let header_str = String::from_utf8_lossy(&header);
+    let len = header_str
+        .lines()
+        .find(|l| l.to_ascii_lowercase().starts_with("content-length"))
+        .and_then(|l| l.split(':').nth(1))
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+
+    let mut body = vec![0u8; len];
+    r.read_exact(&mut body)?;
+    let v: Value = serde_json::from_slice(&body)
+        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
+    Ok(v)
+}
 
 pub async fn write_lsp_message<W>(w: &mut W, msg: &Value) -> io::Result<()>
 where
@@ -46,22 +85,7 @@ where
     let body = serde_json::to_vec(msg)
         .map_err(|e| io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
     let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    
-    unsafe {
-        if 1 < crate::IS_VERBOSE {
-            eprintln!("[clasangd] >>> Sending message: method={}", 
-                msg.get("method").and_then(|m| m.as_str()).unwrap_or("(no method)"));
-        }
-    }
-    
     w.write_all(header.as_bytes()).await?;
     w.write_all(&body).await?;
-    w.flush().await?;
-    
-    unsafe {
-        if 1 < crate::IS_VERBOSE {
-            eprintln!("[clasangd] >>> Message sent and flushed");
-        }
-    }
-    Ok(())
+    w.flush().await
 }
