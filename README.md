@@ -1,18 +1,11 @@
 # Overview
-This program can merge diagnoses from clangd and logs at build or runtime and send them to your editor, as if from a single LSP.
-
+This program can send compile error and runtime error to editors by LSP.
+clang python java are allowed.
 # Usage
 ## Build
 ```bash
-  cargo build --release
+  cargo install --path . --root ~/.cargo 
 ```
-make it available
-```bash
-  ln -s "${PWD}/target/release/clasangd" ~/.local/bin
-```
-## lsp-setup
-* for helix editor
-    see example/language.toml
 ## Options
 ```
 Options:
@@ -21,11 +14,5 @@ Options:
   -h, --help         Print help
   -V, --version      Print version
 ```
-# ToDo
- - handle set of files  like header and source files
- - wrap not only clangd, like jdtls
- - splite read_lsp into reading client_stdout part and throwing at lsp_stdin
-# Issue
-~~It can handle only initial Asan log.
-Maybe, lsp cannot  receive same comment in short span.~~ solved
-
+# Todo
+- python's underline

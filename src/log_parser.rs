@@ -9,6 +9,7 @@ pub fn parse_diagnostics(text: &str, uri: &str, root: &str) -> HashMap<String, V
     parse_oneline(text, uri, root, &mut out);
     parse_san_error(text, uri, root, &mut out);
     parse_stacktrace(text, uri, root, &mut out);
+    parse_traceback(text, uri, root, &mut out);
     out
 }
 pub fn parse_oneline(
@@ -194,6 +195,8 @@ pub fn parse_stacktrace(
     root_path: &str,
     out: &mut HashMap<String, Vec<Value>>,
 ) {
+    // Exception in thread "main" java.lang.ArrayIndexOutOfBoundsException: Index 0 out of bounds for length 0
+    // 	at crash.main(crash.java:4)
     let re_exception = Regex::new(r"(?m)^(?:Exception in thread .+?|Traceback|.*?Error):\s*(.+)")
         .expect("invalid regex");
 
@@ -229,5 +232,116 @@ pub fn parse_stacktrace(
                 continue;
             }
         }
+    }
+}
+pub fn parse_traceback(
+    text: &str,
+    saved_uri: &str,
+    root_path: &str,
+    out: &mut HashMap<String, Vec<Value>>,
+) {
+    // Traceback (most recent call last):
+    //   File "/home/moamoa/report/b_tree.py", line 66, in <module>
+    //     tree.b_tree_insert(i)
+    //     ~~~~~~~~~~~~~~~~~~^^^
+    //   File "/home/moamoa/report/b_tree.py", line 63, in b_tree_insert
+    //     self.b_tree_insert_nonfull(r,k)
+    //     ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+    //   File "/home/moamoa/report/b_tree.py", line 52, in b_tree_insert_nonfull
+    //     if x.c[i].n==2*self.t-1:
+    //        ~~~^^^
+    // IndexError: list index out of range
+    let re_error = Regex::new(r"^(?P<msg>(?:\w+Error|Exception)[^\r\n]*)").expect("invalid regex");
+
+    let re_at = Regex::new(r#"^\s*File\s+"([^"]+)",\s+line\s+(\d+),(?:\s+in\s+(.+))?"#)
+        .expect("invalid regex");
+    // let re_line=Regex::new(r"\^+").expect("invalid regex");
+
+    let mut current_exception: Option<String> = None;
+    let mut sev = 1;
+
+    for line in text.lines().rev() {
+        if let Some(cap) = re_error.captures(line) {
+            let message = cap
+                .name("msg")
+                .map(|m| m.as_str())
+                .unwrap_or("Runtime error");
+            current_exception = Some(message.to_string());
+            continue;
+        }
+        if let Some(ref exc_msg) = current_exception {
+            if let Some(cap) = re_at.captures(line) {
+                let file = &cap[1];
+                let line_num = cap[2].parse::<u64>().unwrap_or(1).saturating_sub(1);
+                let uri = make_uri(file, saved_uri, root_path);
+                let location = cap
+                    .get(3)
+                    .map(|m| format!(" in {}", m.as_str()))
+                    .unwrap_or_default();
+
+                let diag = json!({
+                    "range": {
+                        "start": { "line": line_num, "character": 0 },
+                        "end": { "line": line_num, "character": 1 }
+                    },
+                    "severity": sev,
+                    "source": "runtime",
+                    "message": format!("{exc_msg}{location}")
+                });
+                sev = 2;
+                out.entry(uri).or_default().push(diag);
+                continue;
+            }
+        } else {
+            sev = 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_python_traceback() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("b_tree.py");
+        std::fs::write(&file_path, "# python test file").unwrap();
+
+        let log = format!(
+            r#"Traceback (most recent call last):
+  File "{file}", line 66, in <module>
+    tree.b_tree_insert(i)
+  File "{file}", line 63, in b_tree_insert
+    self.b_tree_insert_nonfull(r,k)
+  File "{file}", line 52, in b_tree_insert_nonfull
+    if x.c[i].n==2*self.t-1:
+       ~~~^^^
+IndexError: list index out of range
+"#,
+            file = file_path.display()
+        );
+
+        let mut out = HashMap::new();
+        parse_traceback(
+            &log,
+            "file:///tmp/dummy.py",
+            temp_dir.path().to_str().unwrap(),
+            &mut out,
+        );
+
+        let uri = format!("file://{}", file_path.canonicalize().unwrap().display());
+        let diags = out
+            .get(&uri)
+            .expect("diagnostic missing for traceback file");
+
+        assert_eq!(diags.len(), 1);
+        let diag = &diags[0];
+        assert_eq!(diag["range"]["start"]["line"], json!(51));
+        assert_eq!(diag["range"]["start"]["character"], json!(0));
+        assert_eq!(
+            diag["message"],
+            json!("IndexError: list index out of range in b_tree_insert_nonfull")
+        );
     }
 }
