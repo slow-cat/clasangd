@@ -3,7 +3,7 @@ command="clasangd"
 args =["--verbose","1","--name","/tmp/clasangd"]
 [[language]]
 name="c"
-language-servers=["clasangd"]
+language-servers=["clasangd","clangd"]
 [[language]]
 name="cpp"
-language-servers=["clasangd"]
+language-servers=["clasangd","clangd"]
