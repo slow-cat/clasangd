@@ -3,6 +3,7 @@ use crate::SharedStore;
 use crate::log_parser;
 use anyhow::Result;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 use std::fs::read_to_string;
 pub async fn create_publish_message(store: SharedStore, uri: &str) -> Result<Value> {
     let st = store.lock().await;
@@ -61,8 +62,10 @@ pub async fn update_logs_store(
     }
 
     let mut st = store.lock().await;
+    let old_uris: HashSet<String> = st.logs.keys().cloned().collect(); //古いやつ消すためにカラパブリッシュする
     st.set_logs(logs_by_file);
-    let mut pub_uris: Vec<String> = st.logs.keys().cloned().collect();
+    let new_uris: HashSet<String> = st.logs.keys().cloned().collect();
+    let mut pub_uris: Vec<String> = new_uris.union(&old_uris).into_iter().cloned().collect();
     pub_uris.sort();
     Ok(pub_uris)
 }
