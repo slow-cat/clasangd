@@ -4,17 +4,16 @@ use crate::log_parser;
 use anyhow::Result;
 use serde_json::{Value, json};
 use std::fs::read_to_string;
-pub async fn create_publish_message(store: SharedStore) -> Result<Value> {
+pub async fn create_publish_message(store: SharedStore, uri: &str) -> Result<Value> {
     let st = store.lock().await;
-    let uri = st.saved_uri.clone();
-    let merged = st.merged_for(&uri);
+    let merged = st.merged_for(uri);
 
     unsafe {
         if 0 < IS_VERBOSE {
             eprintln!(
                 "[clasangd] Creating publish message for {}:{} log diags",
                 uri,
-                st.logs.get(&uri).map(|v| v.len()).unwrap_or(0)
+                st.logs.get(uri).map(|v| v.len()).unwrap_or(0)
             );
         }
     }
@@ -29,7 +28,11 @@ pub async fn create_publish_message(store: SharedStore) -> Result<Value> {
         }
     }))
 }
-pub async fn update_logs_store(store: SharedStore, build_log: &str, run_log: &str) -> Result<()> {
+pub async fn update_logs_store(
+    store: SharedStore,
+    build_log: &str,
+    run_log: &str,
+) -> Result<Vec<String>> {
     let txt = read_to_string(build_log).unwrap_or_default()
         + &read_to_string(run_log).unwrap_or_default();
     unsafe {
@@ -59,6 +62,7 @@ pub async fn update_logs_store(store: SharedStore, build_log: &str, run_log: &st
 
     let mut st = store.lock().await;
     st.set_logs(logs_by_file);
-
-    Ok(())
+    let mut pub_uris: Vec<String> = st.logs.keys().cloned().collect();
+    pub_uris.sort();
+    Ok(pub_uris)
 }

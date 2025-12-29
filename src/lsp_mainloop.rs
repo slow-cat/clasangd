@@ -133,8 +133,9 @@ pub async fn detect_change_publish(
              _ = tokio::time::sleep(tokio::time::Duration::from_millis(300)), if pending => {
                  pending = false;
 
-                 if let Ok(_) = lsp_diagnosis::update_logs_store(store.clone(), &build_log, &run_log).await {
-                     match lsp_diagnosis::create_publish_message(store.clone()).await {
+                 if let Ok(uris) = lsp_diagnosis::update_logs_store(store.clone(), &build_log, &run_log).await {
+                     for uri in uris{
+                     match lsp_diagnosis::create_publish_message(store.clone(),&uri).await {
                          Ok(msg) => {
                              unsafe {
                                  if 0 < IS_VERBOSE {
@@ -155,6 +156,8 @@ pub async fn detect_change_publish(
                          Err(e) => {
                              eprintln!("[clasangd] Failed to create publish message: {:#}", e);
                          }
+                     }
+
                      }
                  } else {
                      eprintln!("[clasangd] Failed to update logs");
